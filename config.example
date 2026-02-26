@@ -1,0 +1,11 @@
+# vocab-tty 配置文件示例
+# 复制为 config 后按需修改；首次运行 ./vocab-tty 也会引导选择考试并生成 config。
+#
+# exam         当前使用的考试 ID（对应 data/ 下子目录名）
+#              如 ielts-word-list、CET-4、CET-6、Graduate-Entrance、SAT、TOEFL
+# data_dir     词表根目录，其下每个子目录为一类考试（默认：脚本所在目录/data）
+# progress_dir 进度文件所在目录（默认：脚本所在目录）
+
+exam=ielts-word-list
+# data_dir=/path/to/vocab-tty/data
+# progress_dir=/path/to/vocab-tty

@@ -1,0 +1,354 @@
+#!/usr/bin/env bash
+# vocab-tty - Terminal word learning and spelling quiz (IELTS / CET / 考研 / SAT / TOEFL)
+# Author: pjliu
+# Usage: vocab-tty [study|quiz [题数]|config]
+# 无参数时进入菜单（背单词/小测试/设置）；config 为重新选择考试。
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONFIG_FILE="$SCRIPT_DIR/config"
+AWK_SCRIPT="$SCRIPT_DIR/parse_words.awk"
+
+# 从 config 读取 exam、data_dir、progress_dir；未设置则用默认值
+load_config() {
+    local line key val
+    data_dir="$SCRIPT_DIR/data"
+    progress_dir="$SCRIPT_DIR"
+    exam=""
+    if [[ -f "$CONFIG_FILE" ]]; then
+        while IFS= read -r line; do
+            [[ "$line" =~ ^#.*$ ]] && continue
+            [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+            if [[ "$line" =~ ^([a-zA-Z_][a-zA-Z0-9_]*)=(.*)$ ]]; then
+                key="${BASH_REMATCH[1]}"
+                val="${BASH_REMATCH[2]}"
+                val="${val#"${val%%[![:space:]]*}"}"
+                val="${val%"${val##*[![:space:]]}"}"
+                case "$key" in
+                    exam) exam="$val" ;;
+                    data_dir) [[ -n "$val" ]] && data_dir="$val" ;;
+                    progress_dir) [[ -n "$val" ]] && progress_dir="$val" ;;
+                esac
+            fi
+        done < "$CONFIG_FILE"
+    fi
+    # 派生 LIST_DIR 与 PROGRESS_FILE（需在 exam 已设置后调用）
+    if [[ -n "$exam" ]]; then
+        LIST_DIR="${data_dir%/}/$exam"
+        PROGRESS_FILE="${progress_dir%/}/study_progress.$exam"
+    else
+        LIST_DIR=""
+        PROGRESS_FILE=""
+    fi
+}
+
+# 发现 data_dir 下所有可用考试（有 word-list-*.yaml 或 *.json 的子目录）
+discover_exams() {
+    local dir base
+    DISCOVERED_EXAMS=()
+    [[ -d "$data_dir" ]] || return 0
+    for dir in "$data_dir"/*/; do
+        [[ -d "$dir" ]] || continue
+        base="$(basename "$dir")"
+        if find "$dir" -maxdepth 1 -name 'word-list-*.yaml' 2>/dev/null | grep -q .; then
+            DISCOVERED_EXAMS+=("$base")
+        elif find "$dir" -maxdepth 1 -name '*.json' 2>/dev/null | grep -q .; then
+            DISCOVERED_EXAMS+=("$base")
+        fi
+    done
+}
+
+# 交互选择考试并写入 config
+run_config_wizard() {
+    local i choice num
+    load_config
+    discover_exams
+    if [[ ${#DISCOVERED_EXAMS[@]} -eq 0 ]]; then
+        echo "Error: 在 $data_dir 下未发现任何词表（需 word-list-*.yaml 或 *.json）。" >&2
+        exit 1
+    fi
+    printf '\n  可用考试类型:\n\n'
+    for i in "${!DISCOVERED_EXAMS[@]}"; do
+        printf '    %d) %s\n' "$((i + 1))" "${DISCOVERED_EXAMS[$i]}"
+    done
+    printf '\n  请选择 [1-%d]: ' "${#DISCOVERED_EXAMS[@]}"
+    read -r choice
+    choice="$(echo "$choice" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    num="$((choice - 1))"
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$num" -lt 0 ]] || [[ "$num" -ge ${#DISCOVERED_EXAMS[@]} ]]; then
+        echo "无效选择。" >&2
+        exit 1
+    fi
+    exam="${DISCOVERED_EXAMS[$num]}"
+    printf 'exam=%s\ndata_dir=%s\nprogress_dir=%s\n' "$exam" "$data_dir" "$progress_dir" > "$CONFIG_FILE"
+    echo "已写入配置: $CONFIG_FILE (exam=$exam)"
+    LIST_DIR="${data_dir%/}/$exam"
+    PROGRESS_FILE="${progress_dir%/}/study_progress.$exam"
+}
+
+# 确保已配置：未配置则运行 wizard；并做旧进度文件迁移
+ensure_config() {
+    load_config
+    if [[ -z "$exam" ]]; then
+        run_config_wizard
+    else
+        LIST_DIR="${data_dir%/}/$exam"
+        PROGRESS_FILE="${progress_dir%/}/study_progress.$exam"
+    fi
+    # 兼容旧用户：原 study_progress 迁移为 study_progress.ielts-word-list
+    if [[ "$exam" == "ielts-word-list" ]]; then
+        local old_progress="${progress_dir%/}/study_progress"
+        if [[ -f "$old_progress" && ! -f "$PROGRESS_FILE" ]]; then
+            cp "$old_progress" "$PROGRESS_FILE"
+            echo "已从旧进度文件迁移: study_progress -> study_progress.ielts-word-list" >&2
+        fi
+    fi
+}
+
+# Build merged TSV (title, phonetics, chinese, example); output to stdout, total line count in TOTAL_WORDS
+# 支持 YAML（雅思 word-list-*.yaml）与 JSON（其他考试 *.json）
+build_tsv() {
+    local tmp
+    tmp="$(mktemp)"
+    trap "rm -f '$tmp'" RETURN
+    if ! [[ -d "$LIST_DIR" ]]; then
+        echo "Error: list directory not found: $LIST_DIR" >&2
+        return 1
+    fi
+    local yaml_count json_file
+    yaml_count="$(find "$LIST_DIR" -maxdepth 1 -name 'word-list-*.yaml' 2>/dev/null | wc -l)"
+    if [[ "$yaml_count" -gt 0 ]]; then
+        SOURCE_FORMAT="yaml"
+        if ! [[ -f "$AWK_SCRIPT" ]]; then
+            echo "Error: parser not found: $AWK_SCRIPT" >&2
+            return 1
+        fi
+        local files
+        files=()
+        while IFS= read -r -d '' f; do files+=("$f"); done < <(find "$LIST_DIR" -maxdepth 1 -name 'word-list-*.yaml' -print0 | sort -z -V)
+        awk -f "$AWK_SCRIPT" "${files[@]}" > "$tmp"
+    else
+        SOURCE_FORMAT="json"
+        json_file="$(find "$LIST_DIR" -maxdepth 1 -name '*.json' -print0 | xargs -0 ls -1 2>/dev/null | head -n 1)"
+        if [[ -z "$json_file" || ! -f "$json_file" ]]; then
+            echo "Error: no word-list-*.yaml or *.json in $LIST_DIR" >&2
+            return 1
+        fi
+        if ! command -v jq &>/dev/null; then
+            echo "Error: JSON 词表需要 jq，请安装 jq。" >&2
+            return 1
+        fi
+        jq -r '.[] | [
+            .word,
+            "-",
+            ([.translations // [] | .[] | (if .type != null and (.type | tostring | length) > 0 then "\(.type). \(.translation)" else .translation end)] | join("；")),
+            ([.phrases // [] | .[] | "\(.phrase) — \(.translation)"] | join(" | "))
+        ] | "\(.[0])\t\(.[1])\t\(.[2])\t\(.[3])"' "$json_file" > "$tmp"
+    fi
+    TOTAL_WORDS="$(wc -l < "$tmp")"
+    cat "$tmp"
+}
+
+# Get line at 0-based index from TSV (title, phonetics, chinese, example)
+get_line() {
+    local idx="$1"
+    local tsv="$2"
+    sed -n "$((idx + 1))p" "$tsv"
+}
+
+study_mode() {
+    local tmp_tsv
+    tmp_tsv="$(mktemp)"
+    trap "rm -f '$tmp_tsv'; stty sane 2>/dev/null" EXIT
+
+    build_tsv > "$tmp_tsv" || return 1
+    local total="$TOTAL_WORDS"
+    [[ "$total" -gt 0 ]] || return 1
+
+    local idx
+    if [[ -f "$PROGRESS_FILE" ]]; then
+        idx="$(cat "$PROGRESS_FILE")"
+        [[ "$idx" =~ ^[0-9]+$ ]] || idx=0
+        if [[ "$idx" -ge "$total" ]]; then
+            idx=0
+        fi
+    else
+        idx=0
+    fi
+
+    while true; do
+        local line title phonetics chinese example
+        line="$(get_line "$idx" "$tmp_tsv")"
+        IFS=$'\t' read -r title phonetics chinese example <<< "$line"
+        [[ "$phonetics" == "-" ]] && phonetics=""
+
+        clear
+        printf '\n  第 %d / 共 %d 词\n\n' "$((idx + 1))" "$total"
+        printf '  单词: %s\n' "$title"
+        [[ -n "$phonetics" ]] && printf '  音标: %s\n' "$phonetics"
+        printf '  释义: %s\n' "$chinese"
+        if [[ "$SOURCE_FORMAT" == "json" && -n "$example" ]]; then
+            printf '  相关词组:\n'
+            local rest="$example" phrase_entry
+            while [[ -n "$rest" ]]; do
+                if [[ "$rest" == *" | "* ]]; then
+                    phrase_entry="${rest%%" | "*}"
+                    rest="${rest#*" | "}"
+                else
+                    phrase_entry="$rest"
+                    rest=""
+                fi
+                printf '    %s\n' "$phrase_entry"
+            done
+        elif [[ -n "$example" ]]; then
+            printf '  例句: %s\n' "$example"
+        fi
+        printf '\n  [↑] 上一词  [↓] 下一词  [q] 退出\n\n'
+
+        stty raw -echo 2>/dev/null || true
+        local k
+        k="$(dd if=/dev/stdin bs=1 count=1 2>/dev/null)" || true
+        local k2 k3
+        if [[ "$k" == $'\x1b' ]]; then
+            k2="$(dd if=/dev/stdin bs=1 count=1 2>/dev/null)" || true
+            k3="$(dd if=/dev/stdin bs=1 count=1 2>/dev/null)" || true
+            k="${k}${k2}${k3}"
+        fi
+        stty sane 2>/dev/null || true
+
+        case "$k" in
+            q|Q) break ;;
+            $'\x1b[A') idx=$((idx - 1)) ;;   # up
+            $'\x1b[B') idx=$((idx + 1)) ;;   # down
+            *) ;;
+        esac
+        if [[ "$idx" -lt 0 ]]; then idx=0; fi
+        if [[ "$idx" -ge "$total" ]]; then idx=$((total - 1)); fi
+    done
+
+    printf '%d' "$idx" > "$PROGRESS_FILE"
+    echo "已保存进度: 第 $((idx + 1)) / $total 词"
+}
+
+quiz_mode() {
+    local count="${1:-20}"
+    local max_idx="${2:-}"   # 0-based 已学习到的最大索引，空表示全词表（兼容旧调用）
+    local tmp_tsv
+    tmp_tsv="$(mktemp)"
+    trap "rm -f '$tmp_tsv'" EXIT
+
+    build_tsv > "$tmp_tsv" || return 1
+    local total="$TOTAL_WORDS"
+    [[ "$total" -gt 0 ]] || return 1
+
+    # 仅从已学习范围出题：0..max_idx；无进度或 max_idx<0 时不允许小测试
+    local pool_end
+    if [[ -n "$max_idx" && "$max_idx" =~ ^-?[0-9]+$ && "$max_idx" -ge 0 ]]; then
+        pool_end="$max_idx"
+    else
+        echo "请先进行背单词以积累学习范围。" >&2
+        return 1
+    fi
+    local pool_size=$((pool_end + 1))
+    if [[ "$count" -gt "$pool_size" ]]; then
+        count="$pool_size"
+    fi
+
+    local correct=0
+    local i
+    local indices
+    indices=($(shuf -i "0-$pool_end" -n "$count" 2>/dev/null || (
+        for ((i=0;i<count;i++)); do echo $((RANDOM % (pool_end + 1))); done
+    )))
+
+    for ((i=0; i<count; i++)); do
+        local idx="${indices[i]}"
+        local line title phonetics chinese example
+        line="$(get_line "$idx" "$tmp_tsv")"
+        IFS=$'\t' read -r title phonetics chinese example <<< "$line"
+        [[ "$phonetics" == "-" ]] && phonetics=""
+
+        printf '\n  第 %d / 共 %d 题\n\n' "$((i + 1))" "$count"
+        printf '  释义: %s\n' "$chinese"
+        [[ -n "$phonetics" ]] && printf '  音标: %s\n' "$phonetics"
+        printf '\n  请输入单词: '
+        local answer
+        read -r answer
+        answer="$(echo "$answer" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        local want
+        want="$(echo "$title" | tr '[:upper:]' '[:lower:]')"
+        answer="$(echo "$answer" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$answer" == "$want" ]]; then
+            printf '  ✓ 正确\n'
+            correct=$((correct + 1))
+        else
+            printf '  ✗ 错误，正确答案: %s\n' "$title"
+        fi
+    done
+
+    printf '\n  正确 %d / 共 %d 题\n' "$correct" "$count"
+}
+
+show_menu() {
+    printf '\n  vocab-tty - 背单词 / 小测试 [%s]\n\n' "$exam"
+    printf '  请选择模式:\n\n'
+    printf '    1) 背单词  - 上下键切换，从上次位置继续\n'
+    printf '    2) 小测试  - 根据释义与音标拼写，默认 20 题\n'
+    printf '    3) 设置    - 更换考试类型\n\n'
+    printf '  请输入 1、2 或 3: '
+    read -r choice
+    choice="$(echo "$choice" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    case "$choice" in
+        1|study|s) study_mode ;;
+        2|quiz|q)
+            printf '  题数 [默认 20]: '
+            read -r count
+            count="$(echo "$count" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            run_quiz "${count:-20}"
+            ;;
+        3|config|c) run_config_wizard ;;
+        *)
+            echo "无效选择，请输入 1、2 或 3。" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# 小测试入口：读取进度文件，仅从已学习范围出题
+run_quiz() {
+    local count="${1:-20}"
+    local max_idx="-1"
+    if [[ -f "$PROGRESS_FILE" ]]; then
+        max_idx="$(cat "$PROGRESS_FILE")"
+        [[ "$max_idx" =~ ^[0-9]+$ ]] || max_idx="-1"
+    fi
+    quiz_mode "$count" "$max_idx"
+}
+
+main() {
+    case "${1:-}" in
+        config)
+            load_config
+            run_config_wizard
+            ;;
+        study)
+            ensure_config
+            study_mode
+            ;;
+        quiz)
+            ensure_config
+            run_quiz "${2:-20}"
+            ;;
+        '')
+            ensure_config
+            show_menu
+            ;;
+        *)
+            echo "Usage: $0 [study | quiz [题数] | config]" >&2
+            echo "  无参数: 进入菜单（背单词/小测试/设置）" >&2
+            echo "  study: 背单词  |  quiz [题数]: 小测试  |  config: 更换考试" >&2
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

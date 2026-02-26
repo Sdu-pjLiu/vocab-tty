@@ -1,23 +1,25 @@
 # vocab-tty
 
-终端背 IELTS 词表 + 拼写小测，Shell + AWK 实现，无 Python 依赖。
+终端背单词 + 拼写小测，支持多种考试词表（雅思 / CET-4·6 / 考研 / SAT / TOEFL）。Shell + AWK + jq，无 Python 依赖。
 
 ---
 
 ## 逻辑与功能概览
 
-**运行逻辑**：词表为分册 YAML（`word-list-01.yaml`～`word-list-48.yaml`），脚本启动时用 `parse_words.awk` 解析为 TSV（单词、音标、释义、例句），背单词时按当前进度显示并保存进度索引，小测试从「已学习范围」内随机抽题、根据释义与音标输入拼写判对错。
+**运行逻辑**：通过同目录下的 **config** 选择当前考试；词表为 YAML（雅思）或 JSON（其他考试），统一解析为 TSV（单词、音标、释义、例句）。背单词按当前进度显示并保存进度索引，小测试从「已学习范围」内随机抽题、根据释义与音标输入拼写判对错。
 
 **功能**：
 
 - **背单词（study）**：显示拼写、音标、释义、例句；↑/↓ 翻词，`q` 退出并保存进度，下次从上次位置继续。
 - **小测试（quiz）**：仅从已学习过的词中出题，根据释义和音标输入英文，自动判对错并统计正确数。
+- **设置（config）**：首次运行或更换考试时选择考试类型，配置与进度均保存在项目目录。
 
 ---
 
 ## 环境要求
 
 - Bash、AWK（如 `gawk`，Ubuntu 一般已装）
+- 使用 **JSON 词表**（CET-4/6、考研、SAT、TOEFL）时需安装 **jq**
 - 背单词需在**真实终端**中运行（方向键在 IDE 内置终端或管道下可能无效）
 
 ---
@@ -27,11 +29,18 @@
 ```
 vocab-tty/
 ├── README.md
-├── show_words          # 入口脚本（可执行）
-├── parse_words.awk     # 词表 YAML → TSV 解析
+├── vocab-tty           # 入口脚本（可执行）
+├── parse_words.awk     # 雅思词表 YAML → TSV 解析
+├── config              # 用户配置（首次运行或 config 子命令生成，可 .gitignore）
+├── config.example      # 配置示例与字段说明
 ├── data/
-│   └── ielts-word-list/   # 词表目录（内含 word-list-01.yaml 等）
-└── study_progress      # 进度文件（自动生成，可删以重置）
+│   ├── ielts-word-list/   # 雅思：word-list-*.yaml
+│   ├── CET-4/             # CET4.json
+│   ├── CET-6/             # CET6.json
+│   ├── Graduate-Entrance/ # Graduate-Entrance.json
+│   ├── SAT/               # SAT.json
+│   └── TOEFL/             # TOEFL.json
+└── study_progress.<exam>  # 进度文件（按考试隔离，如 study_progress.ielts-word-list）
 ```
 
 ---
@@ -42,17 +51,20 @@ vocab-tty/
 
 ```bash
 cd /path/to/vocab-tty
-./show_words
+./vocab-tty
 ```
 
-按提示输入 **1** 背单词或 **2** 小测试；小测试会询问题数，回车默认 20 题。
+**首次运行**：若没有 `config`，会提示选择考试类型（根据 `data/` 下已有词表列出），选择后自动生成 `config` 并进入主菜单。
+
+**主菜单**：输入 **1** 背单词、**2** 小测试、**3** 设置（更换考试）。小测试会询问题数，回车默认 20 题。
 
 ### 子命令（跳过菜单）
 
 ```bash
-./show_words study        # 背单词
-./show_words quiz         # 小测试，默认 20 题
-./show_words quiz 50      # 小测试，50 题
+./vocab-tty study        # 背单词
+./vocab-tty quiz         # 小测试，默认 20 题
+./vocab-tty quiz 50      # 小测试，50 题
+./vocab-tty config       # 重新选择考试类型并写回 config
 ```
 
 ### 背单词操作
@@ -63,12 +75,7 @@ cd /path/to/vocab-tty
 
 界面显示「第 x / 共 N 词」及当前词的拼写、音标、释义、例句。退出时提示「已保存进度: 第 x / N 词」。
 
-**从头开始**：删除进度文件后再运行背单词即可。
-
-```bash
-rm -f study_progress
-./show_words study
-```
+**从头开始**：删除当前考试的进度文件后再运行背单词即可（进度文件名为 `study_progress.<考试ID>`，见下方配置说明）。
 
 ### 小测试规则
 
@@ -79,73 +86,44 @@ rm -f study_progress
 
 ---
 
-## 路径与配置（词汇文件、进度文件）
+## 配置文件（config）
 
-通过环境变量指定**词表目录**和**进度文件路径**；不设置时使用脚本所在目录下的默认路径。
+配置文件位于**主程序同目录**：`vocab-tty` 所在目录下的 `config`。不使用环境变量或用户目录。
 
-### 环境变量说明
+### 字段说明
 
-| 变量 | 含义 | 默认值 |
+| 字段 | 含义 | 默认值 |
 |------|------|--------|
-| `SHOW_WORDS_LIST_DIR` | 词表所在目录（其下需有 `word-list-*.yaml`） | `脚本所在目录/data/ielts-word-list` |
-| `SHOW_WORDS_PROGRESS` | 进度文件路径（保存当前背到第几个词） | `脚本所在目录/study_progress` |
+| `exam` | 当前使用的考试 ID（对应 `data/` 下子目录名） | 无，首次运行需选择 |
+| `data_dir` | 词表根目录（其下每个子目录为一类考试） | 脚本所在目录/data |
+| `progress_dir` | 进度文件所在目录 | 脚本所在目录 |
 
-脚本会读取 `SHOW_WORDS_LIST_DIR` 下所有匹配 `word-list-*.yaml` 的文件（如 `word-list-01.yaml`、`word-list-02.yaml`），按文件名数字排序后合并为一张总词表。**不会**读取无数字的 `word-list.yaml`。
+**派生规则**：
 
-### 使用自定义词表目录
+- 词表目录 = `data_dir/<exam>/`（如 `data/ielts-word-list/` 或 `data/CET-4/`）
+- 进度文件 = `progress_dir/study_progress.<exam>`（如 `study_progress.ielts-word-list`），按考试隔离，切换考试不影响其他考试进度。
 
-词表放在其他目录时，设置 `SHOW_WORDS_LIST_DIR` 指向该目录即可：
+### 首次使用与更换考试
 
-```bash
-export SHOW_WORDS_LIST_DIR=/home/user/my-vocab-lists
-./show_words study
-```
+- 无 `config` 或 `exam` 为空时，运行 `./vocab-tty` 会进入“选择考试”流程并生成 `config`。
+- 使用 `./vocab-tty config` 或主菜单 **3) 设置** 可重新选择考试，写回同一 `config`。
 
-要求：该目录下存在至少一个 `word-list-*.yaml` 文件（如 `word-list-01.yaml`）。
+可复制 `config.example` 为 `config` 后手动编辑；也可直接运行程序按提示选择。
 
-### 使用自定义进度文件路径
+### 词表格式
 
-例如把进度放到用户配置目录，便于多设备或重装后保留：
+- **雅思**：`data/ielts-word-list/` 下为分册 `word-list-01.yaml`～`word-list-48.yaml`，由 `parse_words.awk` 解析。
+- **其他考试（JSON）**：`data/<考试ID>/` 下为 `*.json`，需安装 **jq**。每项含：
+  - `word`：单词（学习与测验只考该词，测验时根据释义输入英文单词校验）。
+  - `translations`：`[{ "translation": "释义", "type": "adv"|"v"|"n"|"adj"|... }]`，词性 + 汉语意思；背词与测验时释义显示为「词性. 释义」（如 `adv. 突然地`）。
+  - `phrases`（可选）：`[{ "phrase": "英文词组", "translation": "中文意思" }]`；背词时在例句区展示「词组 — 释义」。
 
-```bash
-export SHOW_WORDS_PROGRESS=~/.config/vocab-tty/study_progress
-./show_words study
-```
+### 词表来源与致谢
 
-可先创建目录：`mkdir -p ~/.config/vocab-tty`。
+- **雅思词表**：来源于 [sxwang1991/ielts-word-list](https://github.com/sxwang1991/ielts-word-list)（雅思词汇词根+联想记忆法：乱序便携版）。感谢作者的开源分享。
+- **其他考试词表（CET-4/6、考研、SAT、TOEFL 等）**：来源于 [KyleBing/english-vocabulary](https://github.com/KyleBing/english-vocabulary)，该仓库提供四六级、考研、托福、SAT 等英文词汇的 txt 与 json 版本。感谢 [KyleBing](https://github.com/KyleBing) 的整理与开源。
 
-### 持久化配置
-
-在 `~/.bashrc` 或 `~/.zshrc` 中写入后，每次打开终端即生效：
-
-```bash
-# 自定义词表目录（按需修改路径）
-export SHOW_WORDS_LIST_DIR=/path/to/your/word-lists
-
-# 进度文件放到配置目录（可选）
-export SHOW_WORDS_PROGRESS=~/.config/vocab-tty/study_progress
-```
-
-然后执行 `source ~/.bashrc` 或重新打开终端。
-
-### 路径错误时
-
-- 若提示 **"list directory not found"**：检查 `SHOW_WORDS_LIST_DIR`（或默认的 `data/ielts-word-list`）是否存在。
-- 若提示 **"no word-list-*.yaml"**：检查该目录下是否有至少一个 `word-list-NN.yaml` 文件（如 `word-list-01.yaml`）。
-
----
-
-## 词表格式与来源
-
-词表数据来自 [sxwang1991/ielts-word-list](https://github.com/sxwang1991/ielts-word-list)（雅思词汇词根+联想记忆法）。本仓库在 [data/ielts-word-list](data/ielts-word-list) 下已包含分册 YAML。
-
-每册为 `word-list-NN.yaml`，词条字段：
-
-- `title`：单词拼写（可省，则用词条 key）
-- `text`：音标 `[...]` 与释义，可多行
-- `example`：例句（可选）
-
-解析由 [parse_words.awk](parse_words.awk) 完成，输出 TSV 供 `show_words` 使用。
+本仓库的 `data/` 下可放置上述词表数据，或按相同格式自行准备词表使用。
 
 ---
 
@@ -153,4 +131,6 @@ export SHOW_WORDS_PROGRESS=~/.config/vocab-tty/study_progress
 
 - **背单词时方向键/按键无反应**：在系统自带终端（如 Ubuntu Terminal）中运行，避免在 IDE 内置终端或通过管道重定向运行。
 - **小测试提示「请先进行背单词以积累学习范围」**：先运行背单词并至少看过一个词、退出保存进度后，再运行小测试。
-- **进度错乱或想重置**：删除 `study_progress`（或 `SHOW_WORDS_PROGRESS` 指向的文件）后重新运行 `./show_words study`。
+- **进度错乱或想重置**：删除当前考试的进度文件（如 `study_progress.ielts-word-list`）后重新运行 `./vocab-tty study`。
+- **使用 JSON 词表时报错「需要 jq」**：安装 jq（如 `apt install jq` 或 `brew install jq`）。
+- **旧版仅有一个 study_progress 文件**：首次使用雅思且存在旧 `study_progress` 时，程序会自动复制为 `study_progress.ielts-word-list`。

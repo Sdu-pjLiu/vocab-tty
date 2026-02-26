@@ -1,6 +1,8 @@
-# 自动生成的进度（每人本地不同）
+# 用户配置与进度（每人本地不同）
+config
 study_progress
 study_progress.bak
+study_progress.*
 
 # 词表目录为从 GitHub 克隆的独立仓库，忽略其 .git 避免嵌套提交
 data/ielts-word-list/.git/
