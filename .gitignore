@@ -1,0 +1,20 @@
+# 自动生成的进度（每人本地不同）
+study_progress
+study_progress.bak
+
+# 词表目录为从 GitHub 克隆的独立仓库，忽略其 .git 避免嵌套提交
+data/ielts-word-list/.git/
+
+# 编辑器 / IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 临时 / 备份
+*.log
+*.bak

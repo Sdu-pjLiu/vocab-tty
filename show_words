@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# show_words - Terminal word learning and spelling quiz for IELTS word lists
+# Author: pjliu
+# Usage: show_words [study|quiz [题数]]
+# 无参数时先选择 study/quiz，再执行；也可直接传 study 或 quiz。
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LIST_DIR="${SHOW_WORDS_LIST_DIR:-$SCRIPT_DIR/data/ielts-word-list}"
+PROGRESS_FILE="${SHOW_WORDS_PROGRESS:-$SCRIPT_DIR/study_progress}"
+AWK_SCRIPT="$SCRIPT_DIR/parse_words.awk"
+
+# Build merged TSV from all word-list-*.yaml; output to stdout, return total line count in global TOTAL_WORDS
+build_tsv() {
+    local tmp
+    tmp="$(mktemp)"
+    trap "rm -f '$tmp'" RETURN
+    if ! [[ -d "$LIST_DIR" ]]; then
+        echo "Error: list directory not found: $LIST_DIR" >&2
+        return 1
+    fi
+    if ! [[ -f "$AWK_SCRIPT" ]]; then
+        echo "Error: parser not found: $AWK_SCRIPT" >&2
+        return 1
+    fi
+    local files
+    files=()
+    while IFS= read -r -d '' f; do files+=("$f"); done < <(find "$LIST_DIR" -maxdepth 1 -name 'word-list-*.yaml' -print0 | sort -z -V)
+    if [[ ${#files[@]} -eq 0 ]]; then
+        echo "Error: no word-list-*.yaml in $LIST_DIR" >&2
+        return 1
+    fi
+    awk -f "$AWK_SCRIPT" "${files[@]}" > "$tmp"
+    TOTAL_WORDS="$(wc -l < "$tmp")"
+    cat "$tmp"
+}
+
+# Get line at 0-based index from TSV (title, phonetics, chinese, example)
+get_line() {
+    local idx="$1"
+    local tsv="$2"
+    sed -n "$((idx + 1))p" "$tsv"
+}
+
+study_mode() {
+    local tmp_tsv
+    tmp_tsv="$(mktemp)"
+    trap "rm -f '$tmp_tsv'; stty sane 2>/dev/null" EXIT
+
+    build_tsv > "$tmp_tsv" || return 1
+    local total="$TOTAL_WORDS"
+    [[ "$total" -gt 0 ]] || return 1
+
+    local idx
+    if [[ -f "$PROGRESS_FILE" ]]; then
+        idx="$(cat "$PROGRESS_FILE")"
+        [[ "$idx" =~ ^[0-9]+$ ]] || idx=0
+        if [[ "$idx" -ge "$total" ]]; then
+            idx=0
+        fi
+    else
+        idx=0
+    fi
+
+    while true; do
+        local line title phonetics chinese example
+        line="$(get_line "$idx" "$tmp_tsv")"
+        IFS=$'\t' read -r title phonetics chinese example <<< "$line"
+
+        clear
+        printf '\n  第 %d / 共 %d 词\n\n' "$((idx + 1))" "$total"
+        printf '  单词: %s\n' "$title"
+        [[ -n "$phonetics" ]] && printf '  音标: %s\n' "$phonetics"
+        printf '  释义: %s\n' "$chinese"
+        [[ -n "$example" ]] && printf '  例句: %s\n' "$example"
+        printf '\n  [↑] 上一词  [↓] 下一词  [q] 退出\n\n'
+
+        stty raw -echo 2>/dev/null || true
+        local k
+        k="$(dd if=/dev/stdin bs=1 count=1 2>/dev/null)" || true
+        local k2 k3
+        if [[ "$k" == $'\x1b' ]]; then
+            k2="$(dd if=/dev/stdin bs=1 count=1 2>/dev/null)" || true
+            k3="$(dd if=/dev/stdin bs=1 count=1 2>/dev/null)" || true
+            k="${k}${k2}${k3}"
+        fi
+        stty sane 2>/dev/null || true
+
+        case "$k" in
+            q|Q) break ;;
+            $'\x1b[A') idx=$((idx - 1)) ;;   # up
+            $'\x1b[B') idx=$((idx + 1)) ;;   # down
+            *) ;;
+        esac
+        if [[ "$idx" -lt 0 ]]; then idx=0; fi
+        if [[ "$idx" -ge "$total" ]]; then idx=$((total - 1)); fi
+    done
+
+    printf '%d' "$idx" > "$PROGRESS_FILE"
+    echo "已保存进度: 第 $((idx + 1)) / $total 词"
+}
+
+quiz_mode() {
+    local count="${1:-20}"
+    local max_idx="${2:-}"   # 0-based 已学习到的最大索引，空表示全词表（兼容旧调用）
+    local tmp_tsv
+    tmp_tsv="$(mktemp)"
+    trap "rm -f '$tmp_tsv'" EXIT
+
+    build_tsv > "$tmp_tsv" || return 1
+    local total="$TOTAL_WORDS"
+    [[ "$total" -gt 0 ]] || return 1
+
+    # 仅从已学习范围出题：0..max_idx；无进度或 max_idx<0 时不允许小测试
+    local pool_end
+    if [[ -n "$max_idx" && "$max_idx" =~ ^-?[0-9]+$ && "$max_idx" -ge 0 ]]; then
+        pool_end="$max_idx"
+    else
+        echo "请先进行背单词以积累学习范围。" >&2
+        return 1
+    fi
+    local pool_size=$((pool_end + 1))
+    if [[ "$count" -gt "$pool_size" ]]; then
+        count="$pool_size"
+    fi
+
+    local correct=0
+    local i
+    local indices
+    indices=($(shuf -i "0-$pool_end" -n "$count" 2>/dev/null || (
+        for ((i=0;i<count;i++)); do echo $((RANDOM % (pool_end + 1))); done
+    )))
+
+    for ((i=0; i<count; i++)); do
+        local idx="${indices[i]}"
+        local line title phonetics chinese example
+        line="$(get_line "$idx" "$tmp_tsv")"
+        IFS=$'\t' read -r title phonetics chinese example <<< "$line"
+
+        printf '\n  第 %d / 共 %d 题\n\n' "$((i + 1))" "$count"
+        printf '  释义: %s\n' "$chinese"
+        [[ -n "$phonetics" ]] && printf '  音标: %s\n' "$phonetics"
+        printf '\n  请输入单词: '
+        local answer
+        read -r answer
+        answer="$(echo "$answer" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        local want
+        want="$(echo "$title" | tr '[:upper:]' '[:lower:]')"
+        answer="$(echo "$answer" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$answer" == "$want" ]]; then
+            printf '  ✓ 正确\n'
+            correct=$((correct + 1))
+        else
+            printf '  ✗ 错误，正确答案: %s\n' "$title"
+        fi
+    done
+
+    printf '\n  正确 %d / 共 %d 题\n' "$correct" "$count"
+}
+
+show_menu() {
+    printf '\n  show_words - IELTS 背单词 / 小测试\n\n'
+    printf '  请选择模式:\n\n'
+    printf '    1) 背单词  - 上下键切换，从上次位置继续\n'
+    printf '    2) 小测试  - 根据释义与音标拼写，默认 20 题\n\n'
+    printf '  请输入 1 或 2: '
+    read -r choice
+    choice="$(echo "$choice" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    case "$choice" in
+        1|study|s) study_mode ;;
+        2|quiz|q)
+            printf '  题数 [默认 20]: '
+            read -r count
+            count="$(echo "$count" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            run_quiz "${count:-20}"
+            ;;
+        *)
+            echo "无效选择，请输入 1 或 2。" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# 小测试入口：读取进度文件，仅从已学习范围出题
+run_quiz() {
+    local count="${1:-20}"
+    local max_idx="-1"
+    if [[ -f "$PROGRESS_FILE" ]]; then
+        max_idx="$(cat "$PROGRESS_FILE")"
+        [[ "$max_idx" =~ ^[0-9]+$ ]] || max_idx="-1"
+    fi
+    quiz_mode "$count" "$max_idx"
+}
+
+main() {
+    case "${1:-}" in
+        study) study_mode ;;
+        quiz)  run_quiz "${2:-20}" ;;
+        '')    show_menu ;;
+        *)
+            echo "Usage: $0 [study | quiz [题数]]" >&2
+            echo "  无参数: 进入菜单选择 背单词/小测试" >&2
+            echo "  study: 背单词  |  quiz [题数]: 小测试（默认 20 题）" >&2
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
