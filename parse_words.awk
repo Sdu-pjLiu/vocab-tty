@@ -121,8 +121,8 @@ END { if (key != "" || state != "key") flush() }
 function flush() {
     if (key == "") return
     t = (title != "" ? title : key)
-    # Extract phonetics: first [...] in text (keep brackets for display)
-    ph = ""
+    # Extract phonetics: first [...] in text (keep brackets for display)；无音标时用 "-" 占位，保证 TSV 恒为 4 列（避免空列导致 read 错位）
+    ph = "-"
     if (match(text, /\[[^\]]+\]/)) ph = substr(text, RSTART, RLENGTH)
     # Chinese: after first ] (rest of line); if no ] use whole text
     ch = text
