@@ -128,6 +128,10 @@ function flush() {
     ch = text
     if (match(text, /\]/)) ch = substr(text, RSTART + 1)
     gsub(/^[[:space:]]+|[[:space:]]+$/, "", ch)
+    # 去掉多词性时出现的 __单词__ 标记，避免释义中残留
+    gsub(/__[^_]+__/, "", ch)
+    gsub(/[[:space:]]+/, " ", ch)
+    gsub(/^[[:space:]]+|[[:space:]]+$/, "", ch)
     # Normalize output: no TAB/newline in fields
     gsub(/[\t\n\r]+/, " ", t)
     gsub(/[\t\n\r]+/, " ", ph)

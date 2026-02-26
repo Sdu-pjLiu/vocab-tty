@@ -70,9 +70,10 @@ run_config_wizard() {
     for i in "${!DISCOVERED_EXAMS[@]}"; do
         printf '    %d) %s\n' "$((i + 1))" "${DISCOVERED_EXAMS[$i]}"
     done
-    printf '\n  请选择 [1-%d]: ' "${#DISCOVERED_EXAMS[@]}"
+    printf '\n  请选择 [1-%d]，输入 q 退出: ' "${#DISCOVERED_EXAMS[@]}"
     read -r choice
     choice="$(echo "$choice" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ "$choice" == q || "$choice" == Q ]] && exit 0
     num="$((choice - 1))"
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$num" -lt 0 ]] || [[ "$num" -ge ${#DISCOVERED_EXAMS[@]} ]]; then
         echo "无效选择。" >&2
@@ -270,10 +271,11 @@ quiz_mode() {
         printf '\n  第 %d / 共 %d 题\n\n' "$((i + 1))" "$count"
         printf '  释义: %s\n' "$chinese"
         [[ -n "$phonetics" ]] && printf '  音标: %s\n' "$phonetics"
-        printf '\n  请输入单词: '
+        printf '\n  请输入单词（输入 q 退出）: '
         local answer
         read -r answer
         answer="$(echo "$answer" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        [[ "$answer" == q || "$answer" == Q ]] && { printf '\n  已退出小测试。\n'; break; }
         local want
         want="$(echo "$title" | tr '[:upper:]' '[:lower:]')"
         answer="$(echo "$answer" | tr '[:upper:]' '[:lower:]')"
@@ -289,28 +291,39 @@ quiz_mode() {
 }
 
 show_menu() {
-    printf '\n  vocab-tty - 背单词 / 小测试 [%s]\n\n' "$exam"
-    printf '  请选择模式:\n\n'
-    printf '    1) 背单词  - 上下键切换，从上次位置继续\n'
-    printf '    2) 小测试  - 根据释义与音标拼写，默认 20 题\n'
-    printf '    3) 设置    - 更换考试类型\n\n'
-    printf '  请输入 1、2 或 3: '
-    read -r choice
-    choice="$(echo "$choice" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    case "$choice" in
-        1|study|s) study_mode ;;
-        2|quiz|q)
-            printf '  题数 [默认 20]: '
-            read -r count
-            count="$(echo "$count" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-            run_quiz "${count:-20}"
-            ;;
-        3|config|c) run_config_wizard ;;
-        *)
-            echo "无效选择，请输入 1、2 或 3。" >&2
-            exit 1
-            ;;
-    esac
+    while true; do
+        printf '\n  vocab-tty - 背单词 / 小测试 [%s]\n\n' "$exam"
+        printf '  请选择模式:\n\n'
+        printf '    1) 背单词  - 上下键切换，从上次位置继续\n'
+        printf '    2) 小测试  - 根据释义与音标拼写，默认 20 题\n'
+        printf '    3) 设置    - 更换考试类型\n'
+        printf '    q) 退出\n\n'
+        printf '  请输入 1、2、3 或 q: '
+        read -r choice
+        choice="$(echo "$choice" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        case "$choice" in
+            q|Q) exit 0 ;;
+            1|study|s) study_mode ;;
+            2|quiz)
+                printf '  题数 [默认 20]，输入 q 返回菜单: '
+                read -r count
+                count="$(echo "$count" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+                [[ "$count" == q || "$count" == Q ]] && continue
+                run_quiz "${count:-20}"
+                ;;
+            3|config|c)
+                run_config_wizard
+                # 更换考试后重新加载配置，使菜单标题与后续背单词/小测试使用新考试
+                load_config
+                LIST_DIR="${data_dir%/}/$exam"
+                PROGRESS_FILE="${progress_dir%/}/study_progress.$exam"
+                ;;
+            *)
+                echo "无效选择，请输入 1、2、3 或 q。" >&2
+                exit 1
+                ;;
+        esac
+    done
 }
 
 # 小测试入口：读取进度文件，仅从已学习范围出题
