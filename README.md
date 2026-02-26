@@ -122,7 +122,7 @@ export SHOW_WORDS_PROGRESS=~/.config/show_words/study_progress
 
 **词表来源**：IELTS 词表数据来自 [sxwang1991/ielts-word-list](https://github.com/sxwang1991/ielts-word-list)（雅思词汇词根+联想记忆法：乱序便携版）。本项目中词表放在 [data/ielts-word-list](data/ielts-word-list) 目录下。
 
-其中所有匹配 `word-list-*.yaml` 的文件会按文件名排序后**合并**成一张总词表。每个 YAML 中词条需包含：
+词表以**分册**形式提供（`word-list-01.yaml`～`word-list-48.yaml`），脚本运行时按文件名排序后合并使用。目录中若有单文件 `word-list.yaml`（合并版）不会被读取，可删除或忽略。每个 YAML 中词条需包含：
 
 - `title`：单词拼写（可为空，此时用词条 key）
 - `text`：含音标 `[...]` 与释义，可多行

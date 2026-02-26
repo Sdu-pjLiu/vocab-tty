@@ -4,6 +4,8 @@ study_progress.bak
 
 # 词表目录为从 GitHub 克隆的独立仓库，忽略其 .git 避免嵌套提交
 data/ielts-word-list/.git/
+# 仅使用分册 word-list-01.yaml～word-list-48.yaml，合并后的单文件不纳入版本控制
+data/ielts-word-list/word-list.yaml
 
 # 编辑器 / IDE
 .idea/
